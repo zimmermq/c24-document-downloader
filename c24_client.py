@@ -17,10 +17,18 @@ which then shows a 6-digit confirmation code. The flow:
     POST /api/web-login/complete/
          body {web_login_pin, qrtoken, web_login_uuid}
         -> {access_token, refresh_token, ...}
-           (bearer JWT for everything after login)
+           (bearer JWT, ~10 min lifetime, for the document phase)
 
-Login is fully wired; document listing + download are stubbed pending the
-mailbox / attachment traces.
+    GET  /api/document-center/filters/
+        -> {years: [...], accounts: [...], document_types: [...]}
+           (drives which years to enumerate)
+
+    GET  /api/document-center/documents/year/<Y>/
+        -> [doc, doc, ...]   each with a per-doc download ``url``
+
+    GET  <doc.url>
+        -> PDF body, base64-encoded (starts ``JVBE``); raw ``%PDF`` is
+           also accepted in case the API ever stops base64-encoding.
 """
 
 from __future__ import annotations
@@ -34,8 +42,9 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Optional
 
 import qrcode
 import requests
@@ -79,8 +88,26 @@ POLL_INTERVAL_SECONDS = 1.0
 # Shouldn't normally fire — rotations land within ~1 s in practice.
 QRTOKEN_REFRESH_AFTER_SECONDS = 20
 
+# Maximum filename length (Windows-friendly cap).
+MAX_FILENAME_LENGTH = 200
+
 
 # ---------------------------------------------------------------- state
+
+class Status(str, Enum):
+    """Lifecycle states for a single user visit.
+
+    Inherits from ``str`` so it compares cleanly with the literal strings
+    that the Flask templates and ``/status`` JSON callers use.
+    """
+
+    AWAITING_CODE = "awaiting_code"
+    LOGGING_IN = "logging_in"
+    DOWNLOADING = "downloading"
+    DONE = "done"
+    LOGIN_FAILED = "login_failed"
+    DOWNLOAD_FAILED = "download_failed"
+
 
 @dataclass
 class SessionState:
@@ -102,13 +129,12 @@ class SessionState:
     refresh_token: Optional[str] = None
     access_token_expires_at: Optional[int] = None
 
-    # Lifecycle. Status values: awaiting_code, logging_in, downloading,
-    # done, login_failed, download_failed.
-    status: str = "awaiting_code"
+    # Lifecycle.
+    status: Status = Status.AWAITING_CODE
     total_count: int = 0
     downloaded_count: int = 0
     failed_count: int = 0
-    files: List[str] = field(default_factory=list)
+    files: list[str] = field(default_factory=list)
     error: Optional[str] = None
 
 
@@ -214,11 +240,10 @@ def _render_qr_data_uri(payload: str) -> str:
 def submit_code_and_download(state: SessionState, code: str) -> None:
     """Complete login with the 6-digit code, then run the document phase.
 
-    Runs synchronously from the /code request. The two phases are caught
-    separately so a successful login still shows as success even while the
-    document phase is stubbed.
+    Runs in a background thread (spawned by ``/code``); per-doc failures
+    don't abort the whole run, they're tracked separately on the state.
     """
-    state.status = "logging_in"
+    state.status = Status.LOGGING_IN
     try:
         # The page's heartbeat usually caches web_login_uuid before the
         # user can hit submit; only loop if it didn't.
@@ -227,51 +252,53 @@ def submit_code_and_download(state: SessionState, code: str) -> None:
         _submit_code(state, code)
     except Exception as e:
         logger.exception("C24 login failed")
-        state.status = "login_failed"
+        state.status = Status.LOGIN_FAILED
         state.error = str(e)
         return
 
     logger.info("C24 login OK (sub=%s)", _jwt_subject(state.access_token))
 
-    state.status = "downloading"
+    state.status = Status.DOWNLOADING
     try:
         documents = _list_documents(state)
     except Exception as e:
         logger.exception("C24 document listing failed")
-        state.status = "download_failed"
+        state.status = Status.DOWNLOAD_FAILED
         state.error = str(e)
         return
 
     state.total_count = len(documents)
     for doc in documents:
-        try:
-            fetched = _download_document(state, doc)
-            state.downloaded_count += 1
-            logger.info(
-                "C24 doc %d/%d %s: %s",
-                state.downloaded_count + state.failed_count,
-                state.total_count,
-                "fetched " if fetched else "(existed)",
-                doc.get("download_name") or doc.get("document_id"),
-            )
-        except Exception as e:
-            # Per-doc failures don't abort the whole run: one bad URL (we've
-            # seen 401s on a few older pocket statements) shouldn't lose all
-            # the docs that come after it. Failures land in state.files with
-            # a ✗ marker so the user sees which ones to investigate.
-            state.failed_count += 1
-            logger.warning(
-                "C24 doc %d/%d FAILED: %s — %s",
-                state.downloaded_count + state.failed_count,
-                state.total_count,
-                doc.get("download_name") or doc.get("document_id"),
-                e,
-            )
-            state.files.append(
-                f"✗ {_safe_folder_name(doc.get('subtitle') or 'Sonstige')}/"
-                f"{doc.get('download_name') or doc.get('document_id') or '?'}: {e}"
-            )
-    state.status = "done"
+        _run_one_download(state, doc)
+    state.status = Status.DONE
+
+
+def _run_one_download(state: SessionState, doc: dict) -> None:
+    """One iteration of the document loop. Per-doc failures are caught and
+    counted; the loop continues to the next doc."""
+    try:
+        fetched = _download_document(state, doc)
+        state.downloaded_count += 1
+        logger.info(
+            "C24 doc %d/%d %s: %s",
+            state.downloaded_count + state.failed_count,
+            state.total_count,
+            "fetched " if fetched else "(existed)",
+            doc.get("download_name") or doc.get("document_id"),
+        )
+    except Exception as e:
+        state.failed_count += 1
+        logger.warning(
+            "C24 doc %d/%d FAILED: %s — %s",
+            state.downloaded_count + state.failed_count,
+            state.total_count,
+            doc.get("download_name") or doc.get("document_id"),
+            e,
+        )
+        state.files.append(
+            f"✗ {_safe_folder_name(doc.get('subtitle') or 'Sonstige')}/"
+            f"{doc.get('download_name') or doc.get('document_id') or '?'}: {e}"
+        )
 
 
 def _poll_for_authorization(state: SessionState) -> str:
@@ -315,9 +342,9 @@ def _submit_code(state: SessionState, code: str) -> None:
     state.access_token_expires_at = data.get("access_token_expires_at")
 
 
-# ------------------------------------------- document phase (pending capture)
+# --------------------------------------------------------- document phase
 
-def _list_documents(state: SessionState) -> List[dict]:
+def _list_documents(state: SessionState) -> list[dict]:
     """Enumerate every C24 document across the years that actually exist.
 
     Two-step:
@@ -337,7 +364,7 @@ def _list_documents(state: SessionState) -> List[dict]:
     response.raise_for_status()
     years = response.json().get("years", [])
 
-    all_docs: List[dict] = []
+    all_docs: list[dict] = []
     for year in sorted(years, reverse=True):
         response = state.session.get(
             C24_DOCUMENTS_BY_YEAR_URL.format(year=year),
@@ -355,22 +382,17 @@ def _list_documents(state: SessionState) -> List[dict]:
 
 
 def _download_document(state: SessionState, doc: dict) -> bool:
-    """Fetch one document and write it into ``state.output_dir``.
+    """Fetch one document and write it under ``state.output_dir/<account>/``.
 
     Returns ``True`` if the file was actually fetched and written, ``False``
-    if it already existed on disk (used by the caller for a "(skip, existed)"
-    log line vs. a "downloaded" one).
+    if it already existed on disk (the caller uses this for a "fetched" vs
+    "(existed)" log line).
 
-    Each ``doc`` carries a relative ``url`` (the exact path varies by
-    ``document_type`` — main-account statements, pocket statements, ATC
-    documents all live under different prefixes). The response body is
-    the PDF itself, observed delivered as base64-encoded text — the bytes
-    start with ``JVBE`` which decode to ``%PDF-1.7\\n``. We accept raw
-    ``%PDF`` bytes too in case the API stops base64-encoding one day.
-
-    Filename: ``{YYYY-MM-DD}_{download_name}.pdf`` — the date prefix is
-    ``created_at`` so files sort chronologically, mirroring the
-    portal-document-downloader convention.
+    The relative ``url`` varies by document_type (main-account statements,
+    pocket statements, ATC documents all live under different prefixes).
+    The response body is the PDF, observed delivered as base64 (``JVBE``
+    decodes to ``%PDF-1.7``); raw ``%PDF`` bytes are accepted as forward
+    compatibility.
     """
     rel_url = doc.get("url") or ""
     if not rel_url.startswith("/"):
@@ -381,7 +403,7 @@ def _download_document(state: SessionState, doc: dict) -> bool:
 
     if output_path.exists():
         state.files.append(f"{display} (existed)")
-        return False  # not newly downloaded
+        return False
 
     response = state.session.get(
         f"{C24_API_BASE}{rel_url}",
@@ -389,22 +411,28 @@ def _download_document(state: SessionState, doc: dict) -> bool:
         timeout=120,
     )
     response.raise_for_status()
-    body = response.content
-    if body.startswith(b"%PDF"):
-        pdf_bytes = body
-    elif body.startswith(b"JVBE"):  # base64 of "%PD"
-        pdf_bytes = base64.b64decode(body)
-    else:
-        raise RuntimeError(
-            f"Unexpected response body for {doc.get('document_id')}: "
-            f"{body[:30]!r}…"
-        )
-
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_bytes(pdf_bytes)
+    output_path.write_bytes(_decode_document_body(response.content, doc))
     state.files.append(display)
     return True
 
+
+def _decode_document_body(body: bytes, doc: dict) -> bytes:
+    """Return PDF bytes from a download response.
+
+    The C24 API delivers PDFs as base64 text (body starts with ``JVBE``,
+    the base64 encoding of ``%PD``); raw ``%PDF`` bytes are accepted too.
+    """
+    if body.startswith(b"%PDF"):
+        return body
+    if body.startswith(b"JVBE"):
+        return base64.b64decode(body)
+    raise RuntimeError(
+        f"Unexpected response body for {doc.get('document_id')}: {body[:30]!r}…"
+    )
+
+
+# ---------------------------------------------------- filename / folder
 
 def _build_filename(doc: dict) -> str:
     """``{YYYY-MM-DD}_{download_name}.pdf`` (date from ``created_at``)."""
@@ -412,7 +440,7 @@ def _build_filename(doc: dict) -> str:
     name = doc.get("download_name") or doc.get("document_id") or "Dokument"
     ext = ".pdf" if "pdf" in (doc.get("mimetype") or "").lower() else ""
     raw = f"{created}_{name}{ext}" if created else f"{name}{ext}"
-    return sanitize_filename(raw)
+    return _sanitize_filename(raw)
 
 
 def _safe_folder_name(name: str) -> str:
@@ -424,9 +452,23 @@ def _safe_folder_name(name: str) -> str:
     return name.strip() or "Sonstige"
 
 
-# ---------------------------------------------------------------- helpers
+def _sanitize_filename(name: str) -> str:
+    """Filesystem-safe filename: replace illegal chars, collapse whitespace,
+    cap at ``MAX_FILENAME_LENGTH`` (Windows-friendly)."""
+    name = re.sub(r'[<>:"/\\|?*]', "_", name)
+    name = "".join(c for c in name if ord(c) >= 32)
+    name = re.sub(r"[_\s]+", "_", name)
+    base, ext = os.path.splitext(name)
+    name = base.rstrip(".") + ext
+    if len(name) > MAX_FILENAME_LENGTH:
+        base, ext = os.path.splitext(name)
+        name = base[: MAX_FILENAME_LENGTH - len(ext)] + ext
+    return name.strip("_")
 
-def _c24_session_headers(state: SessionState) -> Dict[str, str]:
+
+# ------------------------------------------------------ headers + JWT
+
+def _c24_session_headers(state: SessionState) -> dict[str, str]:
     """The x-c24-* headers every C24 API call carries.
 
     The SPA generates a **fresh** ``x-c24-guid`` per request (verified
@@ -442,7 +484,7 @@ def _c24_session_headers(state: SessionState) -> Dict[str, str]:
     }
 
 
-def _auth_headers(state: SessionState) -> Dict[str, str]:
+def _auth_headers(state: SessionState) -> dict[str, str]:
     """Headers for authenticated C24 API calls (post-login)."""
     return {
         **_c24_session_headers(state),
@@ -456,33 +498,7 @@ def _jwt_subject(token: Optional[str]) -> Optional[str]:
         return None
     try:
         payload_b64 = token.split(".")[1]
-        payload_b64 += "=" * (-len(payload_b64) % 4)
+        payload_b64 += "=" * (-len(payload_b64) % 4)  # base64 padding
         return json.loads(base64.urlsafe_b64decode(payload_b64)).get("sub")
     except Exception:
         return None
-
-
-def sanitize_filename(name: str) -> str:
-    """Filesystem-safe filename: replace illegal chars, collapse whitespace,
-    cap at 200 chars (Windows-friendly). Lifted from portal-document-downloader."""
-    name = re.sub(r'[<>:"/\\|?*]', "_", name)
-    name = "".join(c for c in name if ord(c) >= 32)
-    name = re.sub(r"[_\s]+", "_", name)
-    base, ext = os.path.splitext(name)
-    name = base.rstrip(".") + ext
-    if len(name) > 200:
-        base, ext = os.path.splitext(name)
-        name = base[: 200 - len(ext)] + ext
-    return name.strip("_")
-
-
-def stream_to_file(response: requests.Response, output_path: Path) -> int:
-    """Stream a response body to disk. Returns bytes written."""
-    written = 0
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "wb") as f:
-        for chunk in response.iter_content(chunk_size=8192):
-            if chunk:
-                f.write(chunk)
-                written += len(chunk)
-    return written
