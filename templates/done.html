@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>C24 Bank — {{ state.status }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  {% if state.status in ("logging_in", "downloading") %}
+  <meta http-equiv="refresh" content="2">
+  {% endif %}
+</head>
+<body>
+<main>
+  <h1>C24 Bank</h1>
+
+  {% if state.status == "done" %}
+    {% if state.failed_count %}
+      <p class="warning">
+        ⚠ {{ state.downloaded_count }} von {{ state.total_count }} Dokumenten geladen,
+        {{ state.failed_count }} fehlgeschlagen — siehe Liste unten.
+      </p>
+    {% else %}
+      <p class="success">
+        ✓ {{ state.downloaded_count }} von {{ state.total_count }} Dokumenten geladen.
+      </p>
+    {% endif %}
+  {% elif state.status == "logging_in" %}
+    <p>⏳ Anmeldung läuft …</p>
+  {% elif state.status == "downloading" %}
+    <p>⏳ Lade
+      {{ state.downloaded_count }} / {{ state.total_count }}
+      {% if state.failed_count %}(⚠ {{ state.failed_count }} fehlgeschlagen){% endif %} …
+    </p>
+  {% elif state.status == "login_failed" %}
+    <p class="error">✗ Login fehlgeschlagen: {{ state.error or "unbekannt" }}</p>
+    <p>Häufige Ursachen: falscher Code, abgelaufener QR-Token (zu lange gewartet).</p>
+  {% else %}
+    <p class="error">✗ Fehler: {{ state.error or "unbekannt" }}</p>
+  {% endif %}
+
+  {% if state.files %}
+    <ul>
+      {% for f in state.files %}<li>{{ f }}</li>{% endfor %}
+    </ul>
+  {% endif %}
+
+  <p><a href="{{ url_for('index') }}">Neue Sitzung starten</a></p>
+</main>
+</body>
+</html>

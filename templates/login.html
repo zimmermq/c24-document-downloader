@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>C24 Bank — Anmeldung</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<main>
+  <h1>C24 Bank — Anmeldung</h1>
+
+  {% if deep_link %}
+    <p>Auf einem Handy mit installierter C24-App:</p>
+    <p><a class="deep-link" href="{{ deep_link }}">Tippe hier, um die App zu öffnen</a></p>
+    <details>
+      <summary>Oder scanne den QR-Code</summary>
+      {% if qr_image_data_uri %}
+        <img class="qr" src="{{ qr_image_data_uri }}" alt="C24 Login QR-Code">
+      {% endif %}
+    </details>
+  {% elif qr_image_data_uri %}
+    <p>Scanne diesen QR-Code mit der C24-App:</p>
+    <img class="qr" src="{{ qr_image_data_uri }}" alt="C24 Login QR-Code">
+  {% else %}
+    <p class="warning">
+      QR-Code konnte nicht aus der C24-Loginseite extrahiert werden.
+      Bitte Logs prüfen — der Parser muss vermutlich angepasst werden.
+    </p>
+  {% endif %}
+
+  <p class="auth-status">⏳ Warte auf Bestätigung in der C24-App …</p>
+
+  <form method="POST" action="{{ url_for('code') }}" autocomplete="off">
+    <input type="hidden" name="token" value="{{ token }}">
+    <label for="code">Code aus der C24-App:</label>
+    <input id="code" name="code"
+           inputmode="numeric" pattern="[0-9]*"
+           autocomplete="one-time-code" required autofocus>
+    <button type="submit">Anmelden &amp; Dokumente laden</button>
+  </form>
+
+  <script>
+    // Poll our /status endpoint — same one done.html uses for download progress.
+    // While the session is still "awaiting_code", the server also (a) signals
+    // when the C24 app has authorized us and (b) swaps in a fresh QR when the
+    // current qrtoken is about to expire (C24's tokens are short-lived).
+    const TOKEN = {{ token|tojson }};
+    // 1 Hz matches the official C24 SPA — C24 rotates the qrtoken via the
+    // /api/qrtoken/status/ response, so a slower cadence would mean a
+    // stale QR sitting on screen for too long.
+    const POLL_MS = 1000;
+
+    async function poll() {
+      try {
+        const r = await fetch(`/status?token=${encodeURIComponent(TOKEN)}`, { cache: "no-store" });
+        if (!r.ok) { console.warn("[c24] /status non-ok:", r.status); return; }
+        const data = await r.json();
+
+        if (data.qr_image_data_uri) {
+          console.info("[c24] qrtoken rotated — swapping QR");
+          const img = document.querySelector("img.qr");
+          if (img) img.src = data.qr_image_data_uri;
+        }
+        if (data.deep_link) {
+          const link = document.querySelector("a.deep-link");
+          if (link) link.href = data.deep_link;
+        }
+
+        const indicator = document.querySelector(".auth-status");
+        if (data.authorized) {
+          indicator.textContent = "✓ Login in der App bestätigt – Code eingeben.";
+          indicator.classList.add("authorized");
+          // Bring the input to focus for the typical case where the page
+          // tab was inactive while the user was scanning.
+          document.getElementById("code")?.focus();
+        }
+      } catch (e) { console.error("[c24] /status poll failed:", e); }
+    }
+
+    setInterval(poll, POLL_MS);
+    poll();
+  </script>
+</main>
+</body>
+</html>
