@@ -30,8 +30,7 @@ def session(tmp_path: Path):
     )
     _store.put("t", state)
     yield state
-    # Best-effort cleanup so tests don't bleed state across runs.
-    _store._sessions.pop("t", None)  # noqa: SLF001
+    _store.delete("t")
 
 
 class TestStatusRoute:

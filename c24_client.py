@@ -44,6 +44,7 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from threading import Lock
 from typing import Optional
 
 import qrcode
@@ -136,6 +137,12 @@ class SessionState:
     failed_count: int = 0
     files: list[str] = field(default_factory=list)
     error: Optional[str] = None
+
+    # Guards mutations that involve a check-then-act (transition out of
+    # AWAITING_CODE in /code, qrtoken rotation in /status). Per-instance,
+    # so different sessions don't contend. ``repr=False`` keeps debug
+    # output readable.
+    lock: Lock = field(default_factory=Lock, repr=False, compare=False)
 
 
 @dataclass

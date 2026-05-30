@@ -53,16 +53,23 @@ app = Flask(__name__)
 
 
 class SessionStore:
-    """Thread-safe in-memory dict of token -> ``SessionState``.
+    """Thread-safe in-memory dict of token -> ``SessionState`` with a TTL.
 
     Each entry is the per-visit state — the underlying ``requests.Session``,
     the live QR payload, the bearer tokens, and the download progress.
     Lost on pod restart; that's fine because every flow is meant to
     complete in one visit anyway.
+
+    Sessions older than ``SESSION_TTL_SECONDS`` are evicted on every
+    ``put()`` (cheap O(n) sweep over the few entries we ever hold). This
+    keeps the store from growing unbounded across visits.
     """
+
+    SESSION_TTL_SECONDS = 3600  # 1 hour — well past any C24 token lifetime
 
     def __init__(self) -> None:
         self._sessions: dict[str, SessionState] = {}
+        self._created_at: dict[str, float] = {}
         self._lock = Lock()
 
     def new_token(self) -> str:
@@ -70,11 +77,29 @@ class SessionStore:
 
     def put(self, token: str, state: SessionState) -> None:
         with self._lock:
+            self._evict_expired_locked()
             self._sessions[token] = state
+            self._created_at[token] = time.monotonic()
 
     def get(self, token: str) -> Optional[SessionState]:
         with self._lock:
             return self._sessions.get(token)
+
+    def delete(self, token: str) -> None:
+        with self._lock:
+            self._sessions.pop(token, None)
+            self._created_at.pop(token, None)
+
+    def _evict_expired_locked(self) -> None:
+        cutoff = time.monotonic() - self.SESSION_TTL_SECONDS
+        expired = [t for t, ts in self._created_at.items() if ts < cutoff]
+        for t in expired:
+            self._sessions.pop(t, None)
+            self._created_at.pop(t, None)
+        if expired:
+            app.logger.info(
+                "SessionStore evicted %d expired session(s)", len(expired)
+            )
 
 
 _store = SessionStore()
@@ -114,9 +139,14 @@ def code():
     if state is None:
         abort(404, "No such session (it may have expired or the pod restarted)")
 
-    # Pre-set the status synchronously so /done's first render sees the
-    # logging-in state, not a stale "awaiting_code".
-    state.status = Status.LOGGING_IN
+    # Transition out of AWAITING_CODE atomically: a parallel /status
+    # request must not still mutate the qrtoken after this point, and a
+    # double form-submit must not spawn two background threads.
+    with state.lock:
+        if state.status != Status.AWAITING_CODE:
+            abort(409, "Login already in progress for this session")
+        state.status = Status.LOGGING_IN
+
     Thread(
         target=submit_code_and_download,
         args=(state, code_value),
@@ -171,41 +201,55 @@ def _login_phase_extras(state: SessionState) -> dict:
     - C24 rotated the qrtoken → adopt + return new QR data URI + deep link
     - Nothing changed but our qrtoken is stale → fall back to /generate/
       (rare safety net; logged as WARNING when it fires)
+
+    Mutations are done under ``state.lock`` so a parallel ``/code`` request
+    can't transition out of AWAITING_CODE while we're about to apply a
+    qrtoken rotation that the background thread would then use. If the
+    transition already happened, we bail with an empty extras dict — the
+    base ``/status`` payload still goes out unchanged.
     """
-    try:
-        result = poll_qrtoken_status(state)
-    except Exception:
-        app.logger.exception("c24 status poll failed")
-        result = None
+    with state.lock:
+        if state.status != Status.AWAITING_CODE:
+            return {}
 
-    extras: dict = {"qrtoken_age_seconds": int(time.time() - state.qrtoken_fetched_at)}
-
-    if result and result.web_login_uuid:
-        state.web_login_uuid = result.web_login_uuid
-        extras["authorized"] = True
-        return extras
-
-    extras["authorized"] = False
-    rotated = bool(result and result.qrtoken and result.qrtoken != state.qrtoken_url)
-    if rotated:
-        adopt_qrtoken(state, result.qrtoken)
-    elif time.time() - state.qrtoken_fetched_at > QRTOKEN_REFRESH_AFTER_SECONDS:
-        # Safety net: C24 didn't rotate within the window — force /generate/.
         try:
-            refresh_qrtoken(state)
-            rotated = True
-            app.logger.warning(
-                "qrtoken refresh fell back to /generate/ "
-                "(server didn't rotate within %ds)",
-                QRTOKEN_REFRESH_AFTER_SECONDS,
-            )
+            result = poll_qrtoken_status(state)
         except Exception:
-            app.logger.exception("fallback qrtoken refresh failed")
+            app.logger.exception("c24 status poll failed")
+            result = None
 
-    if rotated:
-        extras["qr_image_data_uri"] = state.qr_image_data_uri
-        extras["deep_link"] = state.deep_link
-    return extras
+        extras: dict = {
+            "qrtoken_age_seconds": int(time.time() - state.qrtoken_fetched_at),
+        }
+
+        if result and result.web_login_uuid:
+            state.web_login_uuid = result.web_login_uuid
+            extras["authorized"] = True
+            return extras
+
+        extras["authorized"] = False
+        rotated = bool(
+            result and result.qrtoken and result.qrtoken != state.qrtoken_url
+        )
+        if rotated:
+            adopt_qrtoken(state, result.qrtoken)
+        elif time.time() - state.qrtoken_fetched_at > QRTOKEN_REFRESH_AFTER_SECONDS:
+            # Safety net: C24 didn't rotate within the window — force /generate/.
+            try:
+                refresh_qrtoken(state)
+                rotated = True
+                app.logger.warning(
+                    "qrtoken refresh fell back to /generate/ "
+                    "(server didn't rotate within %ds)",
+                    QRTOKEN_REFRESH_AFTER_SECONDS,
+                )
+            except Exception:
+                app.logger.exception("fallback qrtoken refresh failed")
+
+        if rotated:
+            extras["qr_image_data_uri"] = state.qr_image_data_uri
+            extras["deep_link"] = state.deep_link
+        return extras
 
 
 @app.route("/healthz")
