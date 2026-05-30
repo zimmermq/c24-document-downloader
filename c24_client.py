@@ -121,7 +121,6 @@ class SessionState:
     # QR challenge — populated by start_login + refreshed by /status.
     qrtoken_url: Optional[str] = None
     qrtoken_fetched_at: float = 0.0
-    deep_link: Optional[str] = None
     qr_image_data_uri: Optional[str] = None
 
     # Login completion — populated by /code submission.
@@ -202,13 +201,12 @@ def refresh_qrtoken(state: SessionState) -> None:
 
 
 def adopt_qrtoken(state: SessionState, qrtoken_url: str) -> None:
-    """Re-render QR + deep-link for ``qrtoken_url`` and stash on state.
+    """Re-render the QR for ``qrtoken_url`` and stash on state.
 
     Used after /generate/ (refresh_qrtoken) and after /status/ tells us
     C24 rotated our token (the /status route in app.py).
     """
     state.qrtoken_url = qrtoken_url
-    state.deep_link = qrtoken_url
     state.qr_image_data_uri = _render_qr_data_uri(qrtoken_url)
     state.qrtoken_fetched_at = time.time()
 

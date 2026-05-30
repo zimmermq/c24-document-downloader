@@ -117,7 +117,6 @@ def index():
     return render_template(
         "login.html",
         token=token,
-        deep_link=state.deep_link,
         qr_image_data_uri=state.qr_image_data_uri,
     )
 
@@ -248,7 +247,6 @@ def _login_phase_extras(state: SessionState) -> dict:
 
         if rotated:
             extras["qr_image_data_uri"] = state.qr_image_data_uri
-            extras["deep_link"] = state.deep_link
         return extras
 
 

@@ -24,7 +24,7 @@ def state(tmp_path: Path) -> SessionState:
     return SessionState(
         token="t", output_dir=tmp_path, session=requests.Session(),
         qrtoken_url="https://link.c24.de/web-login/OLD",
-        qr_image_data_uri="OLD-QR", deep_link="https://link.c24.de/web-login/OLD",
+        qr_image_data_uri="OLD-QR",
         qrtoken_fetched_at=time.time() - 3,
         status=Status.AWAITING_CODE,
     )

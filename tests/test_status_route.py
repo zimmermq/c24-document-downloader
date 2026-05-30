@@ -24,7 +24,7 @@ def session(tmp_path: Path):
     state = SessionState(
         token="t", output_dir=tmp_path, session=requests.Session(),
         qrtoken_url="https://link.c24.de/web-login/OLD",
-        qr_image_data_uri="OLD-QR", deep_link="https://link.c24.de/web-login/OLD",
+        qr_image_data_uri="OLD-QR",
         qrtoken_fetched_at=time.time() - 3,  # young
         status=Status.AWAITING_CODE,
     )
@@ -71,7 +71,7 @@ class TestLoginPhaseExtras:
         assert "qr_image_data_uri" not in extras
         assert session.web_login_uuid == "uuid-x"
 
-    def test_rotated_qrtoken_returns_new_qr_and_link(self, session: SessionState):
+    def test_rotated_qrtoken_returns_new_qr(self, session: SessionState):
         new_url = "https://link.c24.de/web-login/NEW"
         with patch("app.poll_qrtoken_status",
                    return_value=StatusResult(None, new_url)), \
@@ -79,7 +79,6 @@ class TestLoginPhaseExtras:
             extras = _login_phase_extras(session)
         assert extras["authorized"] is False
         assert "qr_image_data_uri" in extras
-        assert "deep_link" in extras
         assert adopt.called
 
     def test_stale_qrtoken_falls_back_to_generate(self, session: SessionState):
