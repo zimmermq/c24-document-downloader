@@ -1,0 +1,47 @@
+# Git
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# Downloaded files
+downloads/
+*.pdf
+
+# Environment files
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tests + dev deps
+tests/
+requirements-dev.txt
+
+# Documentation
+README.md
+
+# Docker
+Dockerfile
+.dockerignore
+
+# CI
+.github/
