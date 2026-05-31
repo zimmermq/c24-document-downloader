@@ -70,6 +70,18 @@ class TestDownloadDocument:
         with pytest.raises(RuntimeError, match="Unexpected url field"):
             _download_document(state, bad)
 
+    def test_flat_mode_writes_into_output_dir_root(self, state, b64_pdf_response):
+        state.flat = True
+        with patch.object(state.session, "get", return_value=b64_pdf_response):
+            _download_document(state, self.DOC)
+        files = list(state.output_dir.rglob("*.pdf"))
+        assert len(files) == 1
+        # Flat: directly under output_dir, no per-account subfolder.
+        assert files[0].parent == state.output_dir
+        assert files[0].name == "2026-05-30_Kontoauszug_2026-05_C24_Smartkonto.pdf"
+        # state.files display has no folder prefix.
+        assert "/" not in state.files[-1]
+
 
 # ------------------------------------------------------- _list_documents
 

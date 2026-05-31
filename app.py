@@ -44,6 +44,13 @@ from c24_client import (
 
 OUTPUT_DIR = Path(os.environ.get("C24_OUTPUT_DIR", "./downloads"))
 
+
+def _flat_enabled() -> bool:
+    """``C24_FLAT_STRUCTURE`` — drop the per-account subfolder when true."""
+    return os.environ.get("C24_FLAT_STRUCTURE", "").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -112,7 +119,7 @@ def index():
     """Open a fresh session, render the QR + code-entry form."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     token = _store.new_token()
-    state = start_login(token, OUTPUT_DIR)
+    state = start_login(token, OUTPUT_DIR, flat=_flat_enabled())
     _store.put(token, state)
     return render_template(
         "login.html",

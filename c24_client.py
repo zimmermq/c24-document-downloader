@@ -117,6 +117,10 @@ class SessionState:
     token: str
     output_dir: Path
     session: requests.Session
+    # When True, drop the per-account subfolder and write every PDF
+    # directly into ``output_dir``. The C24-supplied ``download_name``
+    # already embeds the account name, so collisions are not a concern.
+    flat: bool = False
 
     # QR challenge — populated by start_login + refreshed by /status.
     qrtoken_url: Optional[str] = None
@@ -172,12 +176,18 @@ def _new_http_session() -> requests.Session:
 
 # ---------------------------------------------------------------- QR phase
 
-def start_login(token: str, output_dir: Path) -> SessionState:
-    """Open a fresh login session: anonymous GET /generate/, render the QR."""
+def start_login(token: str, output_dir: Path, *, flat: bool = False) -> SessionState:
+    """Open a fresh login session: anonymous GET /generate/, render the QR.
+
+    ``flat=True`` drops the per-account subfolder so every downloaded PDF
+    lands directly in ``output_dir`` — useful for paperless-style consume
+    folders that prefer a single flat directory.
+    """
     state = SessionState(
         token=token,
         output_dir=output_dir,
         session=_new_http_session(),
+        flat=flat,
     )
     refresh_qrtoken(state)
     return state
@@ -300,10 +310,8 @@ def _run_one_download(state: SessionState, doc: dict) -> None:
             doc.get("download_name") or doc.get("document_id"),
             e,
         )
-        state.files.append(
-            f"✗ {_safe_folder_name(doc.get('subtitle') or 'Sonstige')}/"
-            f"{doc.get('download_name') or doc.get('document_id') or '?'}: {e}"
-        )
+        name = doc.get("download_name") or doc.get("document_id") or "?"
+        state.files.append(f"✗ {_doc_display_name(state, doc, name)}: {e}")
 
 
 def _poll_for_authorization(state: SessionState) -> str:
@@ -402,9 +410,8 @@ def _download_document(state: SessionState, doc: dict) -> bool:
     rel_url = doc.get("url") or ""
     if not rel_url.startswith("/"):
         raise RuntimeError(f"Unexpected url field on document: {rel_url!r}")
-    folder = _safe_folder_name(doc.get("subtitle") or "Sonstige")
-    output_path = state.output_dir / folder / _build_filename(doc)
-    display = f"{folder}/{output_path.name}"
+    output_path = _doc_output_path(state, doc)
+    display = _doc_display_name(state, doc, output_path.name)
 
     if output_path.exists():
         state.files.append(f"{display} (existed)")
@@ -438,6 +445,22 @@ def _decode_document_body(body: bytes, doc: dict) -> bytes:
 
 
 # ---------------------------------------------------- filename / folder
+
+def _doc_output_path(state: SessionState, doc: dict) -> Path:
+    """Where a doc should be written on disk: flat or per-account-subfolder."""
+    filename = _build_filename(doc)
+    if state.flat:
+        return state.output_dir / filename
+    folder = _safe_folder_name(doc.get("subtitle") or "Sonstige")
+    return state.output_dir / folder / filename
+
+
+def _doc_display_name(state: SessionState, doc: dict, filename: str) -> str:
+    """How a doc shows up in ``state.files`` (and therefore on /done)."""
+    if state.flat:
+        return filename
+    return f"{_safe_folder_name(doc.get('subtitle') or 'Sonstige')}/{filename}"
+
 
 def _build_filename(doc: dict) -> str:
     """``{YYYY-MM-DD}_{download_name}.pdf`` (date from ``created_at``)."""

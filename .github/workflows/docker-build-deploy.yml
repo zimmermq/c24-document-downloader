@@ -115,6 +115,14 @@ jobs:
           # generic.deployment.image — sed targets only the tag portion.
           sed -i "s|/c24-document-downloader:[^[:space:]]*|/c24-document-downloader:$VERSION|" apps/c24-document-downloader/values.yaml
 
+          # No-op guard: if the chart already pointed at this version (e.g.
+          # the chart was committed with the matching tag pre-release), skip
+          # the PR step cleanly instead of failing the whole workflow.
+          if git diff --quiet apps/c24-document-downloader/values.yaml; then
+            echo "✓ homelab-iac already at $VERSION — no PR needed"
+            exit 0
+          fi
+
           # Commit the change
           git config user.name "c24-document-downloader-bot"
           git config user.email "noreply@github.com"
