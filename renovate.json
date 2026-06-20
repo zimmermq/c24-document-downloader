@@ -13,7 +13,6 @@
   "ignoreTests": false,
   "rangeStrategy": "pin",
   "semanticCommits": "enabled",
-  "commitMessagePrefix": "chore(deps):",
   "packageRules": [
     {
       "matchUpdateTypes": [
