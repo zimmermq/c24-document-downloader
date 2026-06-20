@@ -1,4 +1,4 @@
 flask>=3.0
-requests>=2.32
+requests==2.34.2
 qrcode[pil]>=8.0
 gunicorn>=23.0
