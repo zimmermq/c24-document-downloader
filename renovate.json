@@ -1,0 +1,76 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "timezone": "Europe/Berlin",
+  "schedule": [
+    "after 11am and before 10pm"
+  ],
+  "labels": [
+    "dependencies"
+  ],
+  "ignoreTests": false,
+  "rangeStrategy": "pin",
+  "semanticCommits": "enabled",
+  "commitMessagePrefix": "chore(deps):",
+  "packageRules": [
+    {
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "automerge": true
+    },
+    {
+      "groupName": "pytest",
+      "matchPackageNames": [
+        "/pytest/"
+      ]
+    },
+    {
+      "groupName": "flask",
+      "matchPackageNames": [
+        "/^flask/",
+        "/werkzeug/"
+      ]
+    },
+    {
+      "groupName": "gunicorn",
+      "matchPackageNames": [
+        "/gunicorn/"
+      ]
+    },
+    {
+      "groupName": "qrcode",
+      "matchPackageNames": [
+        "/qrcode/",
+        "/pillow/"
+      ]
+    },
+    {
+      "groupName": "github-actions",
+      "matchManagers": [
+        "github-actions"
+      ]
+    },
+    {
+      "groupName": "docker actions",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchPackageNames": [
+        "/docker/"
+      ]
+    },
+    {
+      "groupName": "aws actions",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchPackageNames": [
+        "/aws-actions/"
+      ]
+    }
+  ]
+}
