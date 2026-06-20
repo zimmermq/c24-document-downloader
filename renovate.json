@@ -13,6 +13,11 @@
   "ignoreTests": false,
   "rangeStrategy": "pin",
   "semanticCommits": "enabled",
+  "pin": {
+    "group": {
+      "commitMessageTopic": "{{{groupName}}}"
+    }
+  },
   "packageRules": [
     {
       "matchUpdateTypes": [
