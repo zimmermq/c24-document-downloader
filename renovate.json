@@ -53,6 +53,12 @@
       ]
     },
     {
+      "groupName": "requests",
+      "matchPackageNames": [
+        "/requests/"
+      ]
+    },
+    {
       "groupName": "github-actions",
       "matchManagers": [
         "github-actions"
