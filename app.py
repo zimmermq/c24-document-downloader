@@ -45,11 +45,18 @@ from c24_client import (
 OUTPUT_DIR = Path(os.environ.get("C24_OUTPUT_DIR", "./downloads"))
 
 
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _flat_enabled() -> bool:
     """``C24_FLAT_STRUCTURE`` — drop the per-account subfolder when true."""
-    return os.environ.get("C24_FLAT_STRUCTURE", "").strip().lower() in (
-        "1", "true", "yes", "on"
-    )
+    return _env_flag("C24_FLAT_STRUCTURE")
+
+
+def _seed_history_enabled() -> bool:
+    """``C24_SEED_HISTORY``: record listed documents as downloaded, fetch none."""
+    return _env_flag("C24_SEED_HISTORY")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -119,7 +126,9 @@ def index():
     """Open a fresh session, render the QR + code-entry form."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     token = _store.new_token()
-    state = start_login(token, OUTPUT_DIR, flat=_flat_enabled())
+    state = start_login(
+        token, OUTPUT_DIR, flat=_flat_enabled(), seed_history=_seed_history_enabled()
+    )
     _store.put(token, state)
     return render_template(
         "login.html",
@@ -191,6 +200,7 @@ def status():
         "session_status": state.status,
         "total_count": state.total_count,
         "downloaded_count": state.downloaded_count,
+        "skipped_count": state.skipped_count,
         "failed_count": state.failed_count,
         "error": state.error,
     }

@@ -61,6 +61,7 @@ class TestDownloadDocument:
     def test_returns_false_when_file_already_exists(self, state, b64_pdf_response):
         with patch.object(state.session, "get", return_value=b64_pdf_response):
             _download_document(state, self.DOC)  # first call writes
+            state.history_ids.clear()  # exercise the on-disk check, not the history
             fetched = _download_document(state, self.DOC)  # second call skips
         assert fetched is False
         assert state.files[-1].endswith("(existed)")

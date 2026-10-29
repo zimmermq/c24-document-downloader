@@ -43,6 +43,7 @@ class TestStatusRoute:
         session.status = Status.DOWNLOADING
         session.total_count = 63
         session.downloaded_count = 12
+        session.skipped_count = 40
         session.failed_count = 1
         session.error = None
         r = client.get("/status?token=t")
@@ -51,7 +52,17 @@ class TestStatusRoute:
         assert body["session_status"] == "downloading"
         assert body["total_count"] == 63
         assert body["downloaded_count"] == 12
+        assert body["skipped_count"] == 40
         assert body["failed_count"] == 1
+
+    def test_done_page_shows_skipped_documents(self, client, session: SessionState):
+        session.status = Status.DONE
+        session.total_count = 44
+        session.downloaded_count = 3
+        session.skipped_count = 41
+        r = client.get("/done?token=t")
+        assert r.status_code == 200
+        assert "41 übersprungen" in r.get_data(as_text=True)
 
     def test_post_login_phases_skip_c24_calls(self, client, session: SessionState):
         session.status = Status.DOWNLOADING

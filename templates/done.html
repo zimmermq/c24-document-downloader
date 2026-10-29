@@ -16,19 +16,21 @@
   {% if state.status == "done" %}
     {% if state.failed_count %}
       <p class="warning">
-        ⚠ {{ state.downloaded_count }} von {{ state.total_count }} Dokumenten geladen,
+        ⚠ {{ state.downloaded_count }} von {{ state.total_count }} Dokumenten neu geladen,
+        {{ state.skipped_count }} übersprungen (bereits geladen),
         {{ state.failed_count }} fehlgeschlagen — siehe Liste unten.
       </p>
     {% else %}
       <p class="success">
-        ✓ {{ state.downloaded_count }} von {{ state.total_count }} Dokumenten geladen.
+        ✓ {{ state.downloaded_count }} von {{ state.total_count }} Dokumenten neu geladen,
+        {{ state.skipped_count }} übersprungen (bereits geladen).
       </p>
     {% endif %}
   {% elif state.status == "logging_in" %}
     <p>⏳ Anmeldung läuft …</p>
   {% elif state.status == "downloading" %}
     <p>⏳ Lade
-      {{ state.downloaded_count }} / {{ state.total_count }}
+      {{ state.downloaded_count + state.skipped_count + state.failed_count }} / {{ state.total_count }}
       {% if state.failed_count %}(⚠ {{ state.failed_count }} fehlgeschlagen){% endif %} …
     </p>
   {% elif state.status == "login_failed" %}

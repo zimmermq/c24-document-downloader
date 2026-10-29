@@ -92,6 +92,18 @@ QRTOKEN_REFRESH_AFTER_SECONDS = 20
 # Maximum filename length (Windows-friendly cap).
 MAX_FILENAME_LENGTH = 200
 
+# Cross-run download history, kept in the root of the output directory: one
+# document identity per line. The ``._`` prefix matches Paperless-ngx's
+# default consume-folder ignore pattern (``._*``), so the consumer never
+# tries to ingest it. It must live on the same persistent volume as the PDFs.
+HISTORY_FILENAME = "._c24_download_history"
+
+# Serialises reads and appends of the history file across the gunicorn
+# threads of the single worker process (see Dockerfile). It does not stop two
+# concurrent logins from both fetching a document neither had seen yet; that
+# only costs a duplicate PDF, never a lost one.
+_history_lock = Lock()
+
 
 # ---------------------------------------------------------------- state
 
@@ -121,6 +133,10 @@ class SessionState:
     # directly into ``output_dir``. The C24-supplied ``download_name``
     # already embeds the account name, so collisions are not a concern.
     flat: bool = False
+    # When True, the document phase records every listed document in the
+    # download history without fetching any of them. Used once when the
+    # existing documents are already imported elsewhere (e.g. in Paperless).
+    seed_history: bool = False
 
     # QR challenge — populated by start_login + refreshed by /status.
     qrtoken_url: Optional[str] = None
@@ -137,8 +153,11 @@ class SessionState:
     status: Status = Status.AWAITING_CODE
     total_count: int = 0
     downloaded_count: int = 0
+    skipped_count: int = 0
     failed_count: int = 0
     files: list[str] = field(default_factory=list)
+    # Identities from the history file, loaded by _load_download_history.
+    history_ids: set[str] = field(default_factory=set, repr=False)
     error: Optional[str] = None
 
     # Guards mutations that involve a check-then-act (transition out of
@@ -176,18 +195,24 @@ def _new_http_session() -> requests.Session:
 
 # ---------------------------------------------------------------- QR phase
 
-def start_login(token: str, output_dir: Path, *, flat: bool = False) -> SessionState:
+def start_login(
+    token: str, output_dir: Path, *, flat: bool = False, seed_history: bool = False
+) -> SessionState:
     """Open a fresh login session: anonymous GET /generate/, render the QR.
 
     ``flat=True`` drops the per-account subfolder so every downloaded PDF
     lands directly in ``output_dir`` — useful for paperless-style consume
     folders that prefer a single flat directory.
+
+    ``seed_history=True`` makes the run record every listed document as
+    already downloaded instead of fetching it.
     """
     state = SessionState(
         token=token,
         output_dir=output_dir,
         session=_new_http_session(),
         flat=flat,
+        seed_history=seed_history,
     )
     refresh_qrtoken(state)
     return state
@@ -283,9 +308,25 @@ def submit_code_and_download(state: SessionState, code: str) -> None:
         return
 
     state.total_count = len(documents)
-    for doc in documents:
-        _run_one_download(state, doc)
+    _load_download_history(state)
+    if state.seed_history:
+        _seed_download_history(state, documents)
+    else:
+        for doc in documents:
+            _run_one_download(state, doc)
     state.status = Status.DONE
+
+
+def _seed_download_history(state: SessionState, documents: list[dict]) -> None:
+    """Record every listed document as downloaded, fetching none of them."""
+    for doc in documents:
+        _record_downloaded(state, doc)
+        state.skipped_count += 1
+        name = doc.get("download_name") or doc.get("document_id") or "?"
+        state.files.append(f"{_doc_display_name(state, doc, name)} (seeded)")
+    logger.info(
+        "C24 seeded %d document(s) into %s", len(documents), _history_path(state)
+    )
 
 
 def _run_one_download(state: SessionState, doc: dict) -> None:
@@ -293,25 +334,32 @@ def _run_one_download(state: SessionState, doc: dict) -> None:
     counted; the loop continues to the next doc."""
     try:
         fetched = _download_document(state, doc)
-        state.downloaded_count += 1
+        if fetched:
+            state.downloaded_count += 1
+        else:
+            state.skipped_count += 1
         logger.info(
             "C24 doc %d/%d %s: %s",
-            state.downloaded_count + state.failed_count,
+            _processed_count(state),
             state.total_count,
-            "fetched " if fetched else "(existed)",
+            "fetched " if fetched else "(skipped)",
             doc.get("download_name") or doc.get("document_id"),
         )
     except Exception as e:
         state.failed_count += 1
         logger.warning(
             "C24 doc %d/%d FAILED: %s — %s",
-            state.downloaded_count + state.failed_count,
+            _processed_count(state),
             state.total_count,
             doc.get("download_name") or doc.get("document_id"),
             e,
         )
         name = doc.get("download_name") or doc.get("document_id") or "?"
         state.files.append(f"✗ {_doc_display_name(state, doc, name)}: {e}")
+
+
+def _processed_count(state: SessionState) -> int:
+    return state.downloaded_count + state.skipped_count + state.failed_count
 
 
 def _poll_for_authorization(state: SessionState) -> str:
@@ -398,8 +446,10 @@ def _download_document(state: SessionState, doc: dict) -> bool:
     """Fetch one document and write it under ``state.output_dir/<account>/``.
 
     Returns ``True`` if the file was actually fetched and written, ``False``
-    if it already existed on disk (the caller uses this for a "fetched" vs
-    "(existed)" log line).
+    if it was skipped: either the download history already lists it (the
+    PDF may since have been consumed and deleted) or the file is on disk.
+    Only a successful write or an existing file records the document in the
+    history, so a failed fetch is retried on the next run.
 
     The relative ``url`` varies by document_type (main-account statements,
     pocket statements, ATC documents all live under different prefixes).
@@ -413,7 +463,12 @@ def _download_document(state: SessionState, doc: dict) -> bool:
     output_path = _doc_output_path(state, doc)
     display = _doc_display_name(state, doc, output_path.name)
 
+    if _document_identity(doc) in state.history_ids:
+        state.files.append(f"{display} (already downloaded)")
+        return False
+
     if output_path.exists():
+        _record_downloaded(state, doc)
         state.files.append(f"{display} (existed)")
         return False
 
@@ -425,6 +480,7 @@ def _download_document(state: SessionState, doc: dict) -> bool:
     response.raise_for_status()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_bytes(_decode_document_body(response.content, doc))
+    _record_downloaded(state, doc)
     state.files.append(display)
     return True
 
@@ -442,6 +498,55 @@ def _decode_document_body(body: bytes, doc: dict) -> bytes:
     raise RuntimeError(
         f"Unexpected response body for {doc.get('document_id')}: {body[:30]!r}…"
     )
+
+
+# ---------------------------------------------------- download history
+
+def _document_identity(doc: dict) -> str:
+    """Stable per-document key for cross-run de-duplication.
+
+    The relative download ``url`` encodes account and period (e.g.
+    ``/api/v1/account/<id>/statement/2026/05/``), so it names the same
+    document on every login. The PDF bytes are not a usable key: re-fetching
+    a document need not yield identical bytes, and the file itself is gone
+    once a Paperless consumer has imported it.
+    """
+    return doc.get("url") or ""
+
+
+def _history_path(state: SessionState) -> Path:
+    return state.output_dir / HISTORY_FILENAME
+
+
+def _load_download_history(state: SessionState) -> None:
+    """Read the history file into ``state.history_ids`` (missing = empty)."""
+    path = _history_path(state)
+    with _history_lock:
+        if not path.exists():
+            state.history_ids = set()
+            return
+        lines = path.read_text().splitlines()
+    state.history_ids = {line.strip() for line in lines if line.strip()}
+    logger.info("C24 download history: %d document(s)", len(state.history_ids))
+
+
+def _record_downloaded(state: SessionState, doc: dict) -> None:
+    """Add a document to the history, in memory and on disk.
+
+    A failed write only logs a warning: losing a history line costs one
+    duplicate download later, which is better than failing a successful run.
+    """
+    identity = _document_identity(doc)
+    if not identity or identity in state.history_ids:
+        return
+    state.history_ids.add(identity)
+    try:
+        with _history_lock:
+            state.output_dir.mkdir(parents=True, exist_ok=True)
+            with _history_path(state).open("a") as f:
+                f.write(identity + "\n")
+    except OSError as e:
+        logger.warning("C24 could not update download history: %s", e)
 
 
 # ---------------------------------------------------- filename / folder
