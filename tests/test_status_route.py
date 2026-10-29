@@ -64,6 +64,14 @@ class TestStatusRoute:
         assert r.status_code == 200
         assert "41 übersprungen" in r.get_data(as_text=True)
 
+    def test_done_page_shows_seeded_documents(self, client, session: SessionState):
+        session.status = Status.DONE
+        session.seed_history = True
+        session.total_count = 44
+        session.skipped_count = 44
+        r = client.get("/done?token=t")
+        assert "44 Dokumente als bereits geladen markiert" in r.get_data(as_text=True)
+
     def test_post_login_phases_skip_c24_calls(self, client, session: SessionState):
         session.status = Status.DOWNLOADING
         with patch("app.poll_qrtoken_status") as mock:
@@ -107,3 +115,28 @@ class TestLoginPhaseExtras:
             extras = _login_phase_extras(session)
         assert "qrtoken_age_seconds" in extras
         assert isinstance(extras["qrtoken_age_seconds"], int)
+
+
+class TestCodeRoute:
+    def test_seed_checkbox_enables_seed_mode(self, client, session: SessionState):
+        with patch("app.Thread"):
+            r = client.post("/code", data={"token": "t", "code": "123456",
+                                           "seed_history": "on"})
+        assert r.status_code == 302
+        assert session.seed_history is True
+
+    def test_without_checkbox_downloads_normally(self, client, session: SessionState):
+        with patch("app.Thread"):
+            client.post("/code", data={"token": "t", "code": "123456"})
+        assert session.seed_history is False
+
+    def test_login_page_offers_unchecked_seed_checkbox(self, client):
+        with patch("app.start_login") as start:
+            start.return_value = SessionState(
+                token="x", output_dir=Path("."), session=requests.Session(),
+                qr_image_data_uri="QR",
+            )
+            r = client.get("/")
+        html = r.get_data(as_text=True)
+        assert 'name="seed_history"' in html
+        assert "checked" not in html

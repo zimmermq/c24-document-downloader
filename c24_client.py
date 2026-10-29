@@ -134,8 +134,9 @@ class SessionState:
     # already embeds the account name, so collisions are not a concern.
     flat: bool = False
     # When True, the document phase records every listed document in the
-    # download history without fetching any of them. Used once when the
-    # existing documents are already imported elsewhere (e.g. in Paperless).
+    # download history without fetching any of them. Set from the login
+    # form; used once when the existing documents are already imported
+    # elsewhere (e.g. in Paperless).
     seed_history: bool = False
 
     # QR challenge — populated by start_login + refreshed by /status.
@@ -195,24 +196,18 @@ def _new_http_session() -> requests.Session:
 
 # ---------------------------------------------------------------- QR phase
 
-def start_login(
-    token: str, output_dir: Path, *, flat: bool = False, seed_history: bool = False
-) -> SessionState:
+def start_login(token: str, output_dir: Path, *, flat: bool = False) -> SessionState:
     """Open a fresh login session: anonymous GET /generate/, render the QR.
 
     ``flat=True`` drops the per-account subfolder so every downloaded PDF
     lands directly in ``output_dir`` — useful for paperless-style consume
     folders that prefer a single flat directory.
-
-    ``seed_history=True`` makes the run record every listed document as
-    already downloaded instead of fetching it.
     """
     state = SessionState(
         token=token,
         output_dir=output_dir,
         session=_new_http_session(),
         flat=flat,
-        seed_history=seed_history,
     )
     refresh_qrtoken(state)
     return state

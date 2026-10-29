@@ -34,6 +34,7 @@ button {
   cursor: pointer;
 }
 button:hover { background: #048; }
+label.seed { display: block; margin-top: 1rem; font-size: 0.95rem; color: #555; }
 .warning { color: #b85; }
 .error { color: #c33; }
 .success { color: #2a7; font-weight: 600; }

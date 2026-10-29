@@ -38,7 +38,6 @@ restart, and sessions older than an hour are evicted automatically.
 |----------------------|---------------|----------------------------------------------------------------------------------------------|
 | `C24_OUTPUT_DIR`     | `./downloads` | Where downloaded PDFs land (mount this).                                                     |
 | `C24_FLAT_STRUCTURE` | unset         | When truthy (`1/true/yes/on`), drop the per-account subfolder so every PDF lands flat in `C24_OUTPUT_DIR` — useful for Paperless-style consume folders. |
-| `C24_SEED_HISTORY`   | unset         | When truthy, the next login records every listed document as already downloaded and fetches none of them. Set it once when the existing documents are already imported, then unset it. |
 | `PORT`               | `5000`        | HTTP listen port (dev only; Docker hardcodes 5000).                                          |
 
 Files are named `{YYYY-MM-DD}_{download_name}.pdf` from the document's
@@ -52,6 +51,10 @@ Every downloaded document is recorded in `C24_OUTPUT_DIR/._c24_download_history`
 Paperless consumer has imported and deleted the PDF. The `._` prefix keeps
 Paperless from ingesting the file. A failed download is not recorded, so it is
 retried next time. Delete the file to download everything again.
+
+If the existing documents are already imported, tick "Nur als bereits geladen
+markieren" on the login page once: that login records every listed document in
+the history and downloads nothing, so later logins fetch only new documents.
 
 ## Local development
 
