@@ -56,7 +56,7 @@ retried next time. Delete the file to download everything again.
 ## Local development
 
 ```bash
-python3.13 -m venv .venv
+python3.15 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/python app.py
 # open http://localhost:5000
